@@ -1,21 +1,20 @@
 /**
  * Displayarama Executive Dashboard — CRM Proxy
- * -------------------------------------------------------
  * Vercel Serverless Function. Keeps your Private Integration Token
  * secure on the server — never exposed to the browser.
  *
  * DEPLOY TO VERCEL
  *   1. Push this file as api/CRM.js to your GitHub repo
  *   2. In Vercel Settings -> Environment Variables, add:
- *        GHL_PIT     = pit-e8a6a16c-7d27-4b00-92c4-8437f2ac85af
+ *        GHL_PIT         = pit-e8a6a16c-7d27-4b00-92c4-8437f2ac85af
  *        GHL_LOCATION_ID = ypGka1tD6SCnuZI7heIw
  *   3. Redeploy
  *
  * ENDPOINTS
- *   ?resource=ping            -> location info (test connection)
- *   ?resource=pipelines       -> all pipelines + stages
- *   ?resource=opportunities   -> all opportunities (auto-paginated)
- *   ?resource=users           -> all users
+ *   ?resource=ping          -> location info (test connection)
+ *   ?resource=pipelines     -> all pipelines + stages
+ *   ?resource=opportunities -> all opportunities (auto-paginated)
+ *   ?resource=users         -> all users
  */
 
 const BASE = "https://services.leadconnectorhq.com";
@@ -33,6 +32,7 @@ async function ghlFetch(path, query, pit) {
   const qs = new URLSearchParams(query).toString();
   const url = `${BASE}${path}${qs ? `?${qs}` : ""}`;
   const res = await fetch(url, {
+    method: "GET",
     headers: {
       Accept: "application/json",
       Authorization: `Bearer ${pit}`,
@@ -49,44 +49,34 @@ async function ghlFetch(path, query, pit) {
   return { ok: res.status >= 200 && res.status < 300, status: res.status, body: json };
 }
 
-// Fetch ALL opportunities using page-based pagination (not cursor-based).
+// Fetch ALL opportunities using skip/limit pagination.
 async function fetchAllOpportunities(locationId, pit) {
   const all = [];
-  let page = 1;
-  
-  while (page <= 100) { // safety cap at 10,000 records
+  let skip = 0;
+  const limit = 100;
+
+  while (skip < 10000) {
     const { ok, status, body } = await ghlFetch(
-      "/opportunities/search",
-      {
-        location_id: locationId,
-        limit: "100",
-        page: String(page),
-      },
+      "/opportunities/",
+      { location_id: locationId, limit: String(limit), skip: String(skip) },
       pit,
     );
 
     if (!ok) {
-      // If first page fails, return the error
-      if (page === 1) return { ok: false, status, body };
-      // If later pages fail, return what we have
-      console.error(`Page ${page} failed:`, body);
+      if (skip === 0) return { ok: false, status, body };
       break;
     }
 
     const batch = body.opportunities || [];
     all.push(...batch);
-
-    // Stop if we got less than a full page
-    if (batch.length < 100) break;
-    
-    page++;
+    if (batch.length < limit) break;
+    skip += limit;
   }
 
   return { ok: true, body: { opportunities: all } };
 }
 
 module.exports = async (req, res) => {
-  // Handle CORS preflight
   if (req.method === "OPTIONS") {
     jsonResponse(res, 204, {});
     return;
@@ -95,7 +85,6 @@ module.exports = async (req, res) => {
   const pit = process.env.GHL_PIT;
   const locationId = process.env.GHL_LOCATION_ID;
 
-  // Validate environment variables
   if (!pit || !locationId) {
     jsonResponse(res, 500, {
       error: "Server missing GHL_PIT or GHL_LOCATION_ID environment variables.",
@@ -109,7 +98,6 @@ module.exports = async (req, res) => {
 
   try {
     switch (resource) {
-      
       case "ping": {
         const r = await ghlFetch(`/locations/${locationId}`, {}, pit);
         jsonResponse(res, r.ok ? 200 : r.status, {
@@ -141,15 +129,15 @@ module.exports = async (req, res) => {
       }
 
       default:
-        jsonResponse(res, 404, { 
+        jsonResponse(res, 404, {
           error: `Unknown resource: ${resource}`,
           validResources: ["ping", "pipelines", "opportunities", "users"],
         });
     }
   } catch (err) {
     console.error("Proxy error:", err);
-    jsonResponse(res, 500, { 
-      error: "Proxy internal error", 
+    jsonResponse(res, 500, {
+      error: "Proxy internal error",
       message: String(err).slice(0, 200),
     });
   }
