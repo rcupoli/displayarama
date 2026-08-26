@@ -162,8 +162,8 @@ async function enrichWithContactFields(opportunities, pit, locationId) {
 
   if (neededIds.size > 0) {
     const PAGE = 100;
-    const CONCURRENCY = 12;
-    const TIME_BUDGET_MS = 22000;
+    const CONCURRENCY = 3; // reduced from 12 to avoid 429 rate limits
+    const TIME_BUDGET_MS = 25000;
     const startedAt = Date.now();
 
     // First request to learn the total page count.
@@ -186,19 +186,30 @@ async function enrichWithContactFields(opportunities, pit, locationId) {
       for (let p = 2; p <= totalPages; p++) pageQueue.push(p);
 
       let qi = 0;
+
+      // Retry helper — waits on 429 with exponential backoff.
+      async function fetchWithRetry(p, attempt = 0) {
+        const r = await ghlFetch(
+          "/contacts/search",
+          {},
+          pit,
+          "POST",
+          { locationId, pageLimit: PAGE, page: p },
+        );
+        if (!r.ok && r.status === 429 && attempt < 3) {
+          await new Promise((res) => setTimeout(res, 1500 * (attempt + 1)));
+          return fetchWithRetry(p, attempt + 1);
+        }
+        return r;
+      }
+
       async function pageWorker() {
         while (qi < pageQueue.length) {
           if (fieldMap.size >= neededIds.size) return; // found everyone
           if (Date.now() - startedAt > TIME_BUDGET_MS) return;
           const p = pageQueue[qi++];
           try {
-            const r = await ghlFetch(
-              "/contacts/search",
-              {},
-              pit,
-              "POST",
-              { locationId, pageLimit: PAGE, page: p },
-            );
+            const r = await fetchWithRetry(p);
             if (r.ok) {
               for (const c of r.body.contacts || []) {
                 if (c.id && neededIds.has(c.id))
@@ -207,6 +218,10 @@ async function enrichWithContactFields(opportunities, pit, locationId) {
             }
           } catch {
             // ignore page failure
+          }
+          // Small delay between pages to avoid rate limiting
+          if (qi < pageQueue.length) {
+            await new Promise((res) => setTimeout(res, 200));
           }
         }
       }
