@@ -107,20 +107,33 @@ async function fetchAllConversations(locationId, pit) {
   return { ok: true, body: { conversations: all } };
 }
 
-// Fetch all location users, including individual lookups for any assignedTo user IDs.
+// Fetch all location users. Paginates the /users/ list (100 per page) so we
+// return every rep without re-fetching the (slow) opportunities search.
 async function fetchAllUsers(locationId, pit, assignedToIds = []) {
   const userMap = new Map();
+  const limit = 100;
+  let skip = 0;
 
-  // 1. Fetch location user list
-  const rList = await ghlFetch("/users/", { locationId }, pit);
-  if (rList.ok && Array.isArray(rList.body.users)) {
-    rList.body.users.forEach((u) => {
-      if (u && u.id) userMap.set(u.id, u);
-    });
+  // 1. Paginate the location user list
+  while (skip <= 2000) {
+    const rList = await ghlFetch(
+      "/users/",
+      { locationId, limit: String(limit), skip: String(skip) },
+      pit,
+    );
+    if (rList.ok && Array.isArray(rList.body.users)) {
+      rList.body.users.forEach((u) => {
+        if (u && u.id) userMap.set(u.id, u);
+      });
+      if (rList.body.users.length < limit) break;
+      skip += limit;
+    } else {
+      break;
+    }
   }
 
-  // 2. Resolve missing assignedTo user IDs individually
-  const missingIds = assignedToIds.filter((id) => id && !userMap.has(id));
+  // 2. Resolve any assignedTo IDs that aren't in the location list individually
+  const missingIds = (assignedToIds || []).filter((id) => id && !userMap.has(id));
   await Promise.all(
     missingIds.map(async (uid) => {
       try {
@@ -189,12 +202,9 @@ module.exports = async (req, res) => {
       }
 
       case "users": {
-        // First get opportunities to find assigned user IDs
-        const oppsRes = await fetchAllOpportunities(locationId, pit);
-        const opps = oppsRes.ok ? oppsRes.body.opportunities || [] : [];
-        const assignedIds = Array.from(new Set(opps.map((o) => o.assignedTo).filter(Boolean)));
-
-        const users = await fetchAllUsers(locationId, pit, assignedIds);
+        // Return the location user list directly (fast). We no longer re-fetch
+        // all opportunities here — that was doubling API work and timing out.
+        const users = await fetchAllUsers(locationId, pit, []);
         jsonResponse(res, 200, { users });
         return;
       }
