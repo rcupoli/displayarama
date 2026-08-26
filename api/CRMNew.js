@@ -297,11 +297,3 @@ module.exports = async (req, res) => {
     });
   }
 };
-2. vercel.json
-{
-  "functions": {
-    "api/**/*.js": {
-      "maxDuration": 60
-    }
-  }
-}
